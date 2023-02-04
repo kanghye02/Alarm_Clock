@@ -1,0 +1,202 @@
+// *** CONNECTIONS ***
+/*
+ N5110 LCD pinout from left:
+ #1 RST      - PA0
+ #2 CS/CE    - PA4
+ #3 DC       - PA1
+ #4 MOSI/DIN - PA7
+ #5 SCK/CLK  - PA5
+ #6 VCC      - 3.3V
+ #7 LIGHT    - 200ohm to GND
+ #8 GND
+
+ STM32 SPI1 pins:
+  PA4 CS1
+  PA5 SCK1
+  PA6 MISO1
+  PA7 MOSI1
+*/
+
+#include <RTClock.h>
+RTClock rtclock(RTCSEL_LSE);
+tm_t curTime;
+
+#define N5110_RST       PA1
+#define N5110_CS        PA4
+#define N5110_DC        PA2
+
+#define Button_Set_Alarm PA8
+#define Button_Ok PA9
+#define Button_Set_H PA10
+#define Button_Set_M PA11
+#define Buzzer PA0
+
+// define USESPI in LCD driver header for HW SPI version
+#include "N5110_SPI.h"
+#if USESPI==1
+#include <SPI.h>
+#endif
+N5110_SPI lcd(N5110_RST, N5110_CS, N5110_DC); // RST,CS,DC
+
+#include "c64enh_font.h"
+#include "term9x14_font.h"
+
+
+
+const char *months[] = {"???", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+const char *delim = " :";
+char bld[40];
+
+uint8_t str2month(const char * d)
+{
+  uint8_t i = 13;
+  while((--i) && strcmp(months[i], d));
+  return i;
+}
+
+void setBuildTime(tm_t & mt)
+{
+  // Timestamp format: "Mar 3 2019 12:34:56"
+  snprintf(bld,40,"%s %s\n", __DATE__, __TIME__);
+  char *token = strtok(bld, delim);
+  while(token) {
+    int m = str2month((const char*)token);
+    if(m>0) {
+      mt.month = m;
+      token = strtok(NULL, delim);  mt.day = atoi(token);
+      token = strtok(NULL, delim);  mt.year = atoi(token) - 1970;
+      token = strtok(NULL, delim);  mt.hour = atoi(token);
+      token = strtok(NULL, delim);  mt.minute = atoi(token);
+      token = strtok(NULL, delim);  mt.second = atoi(token);
+    }
+    token = strtok(NULL, delim);
+  }
+  snprintf(bld,40,"Build: %02d-%02d-%02d %02d:%02d:%02d\n",mt.year+1970,mt.month,mt.day,mt.hour,mt.minute,mt.second); Serial.println(bld);
+  rtclock.setTime(mt);
+}
+//-----------------------------------------------------------------------------
+
+void setup()
+{
+  
+  pinMode(Button_Set_Alarm, INPUT);
+  pinMode(Button_Ok, INPUT);
+  pinMode(Button_Set_H, INPUT);
+  pinMode(Button_Set_M, INPUT);
+  pinMode(Buzzer, OUTPUT);
+  Serial.begin(115200);
+  rtclock.breakTime(rtclock.now(), curTime);
+  if(curTime.year+1970<2019) setBuildTime(curTime);  //  <2019 - invalid year
+  lcd.init();
+  lcd.clrScr();
+}
+
+char buf[25];
+long alarmH=-1,alarmM=-1,alarmS=-1;
+int alarm=0;
+
+char *dowLongTxt[] = {"Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday", "??"};
+
+void showClock(int seconds)
+{
+  rtclock.breakTime(rtclock.now(), curTime);
+  lcd.setFont(Term9x14);
+  
+  if(seconds)
+    snprintf(buf, 25, " %d:%02d:%02d ", curTime.hour, curTime.minute, curTime.second);
+  else
+    snprintf(buf, 25, " %d:%02d ", curTime.hour, curTime.minute);
+  lcd.printStr(ALIGN_CENTER, 1, buf);
+
+  lcd.setFont(c64enh);
+
+  if(alarm==1)
+  {
+    snprintf(buf, 25, "alarmed ");
+    lcd.printStr(ALIGN_CENTER, 3, buf);
+  }
+  snprintf(buf, 25, "% 02d.%02d.%d ", curTime.day, curTime.month, curTime.year+1970);   
+  lcd.printStr(ALIGN_CENTER, 4, buf);
+  snprintf(buf, 25, "  %s  ", dowLongTxt[curTime.weekday]);
+  lcd.printStr(ALIGN_CENTER, 5, buf);
+  
+  // SET ALARM CODE  
+    if(digitalRead(Button_Set_Alarm) == HIGH)
+  {
+    delay(400);
+    alarmH=0;alarmM=0,alarmS=0;
+    lcd.clrScr();
+    while(1)
+    {
+        if(digitalRead(Button_Set_Alarm) == HIGH) 
+        {
+          delay(400);
+          lcd.clrScr();
+          lcd.setFont(Term9x14);
+          snprintf(buf, 25, "NO SET ");
+          lcd.printStr(ALIGN_CENTER,  1, buf);
+          
+          delay(2000);
+          break; 
+        }
+        lcd.setFont(Term9x14);
+        snprintf(buf, 25, "SET ALARM");
+        lcd.printStr(ALIGN_CENTER,  1, buf);
+        
+        lcd.setFont(c64enh);
+        snprintf(buf, 25, " %02d:%02d:%02d ", alarmH, alarmM, alarmS);
+        lcd.printStr(ALIGN_CENTER, 3, buf);
+        
+        
+        if(digitalRead(Button_Set_H) == HIGH) 
+        {
+          if(alarmH==23) alarmH=0;
+          else alarmH=alarmH+1;
+          delay(200);
+        }
+        if(digitalRead(Button_Set_M) == HIGH) 
+        {
+          if(alarmM==59) alarmM=0;
+          else alarmM=alarmM+1;
+          delay(200);
+        }
+          
+        if(digitalRead(Button_Ok) == HIGH)
+        { 
+          alarm=1;
+          delay(300);
+          lcd.clrScr();
+          break;
+        }
+    }
+  }
+  //End SET alarm
+}
+void playBuzzer()
+{
+  while(1)
+  {
+    tone(Buzzer,3000,200);
+    delay(350);
+    if(digitalRead(Button_Ok) == HIGH)  
+      break;
+  }
+}
+void loop()
+{
+  showClock(1);
+  rtclock.breakTime(rtclock.now(), curTime);
+  if(curTime.hour==alarmH && curTime.minute==alarmM) 
+    {
+        alarmH=-1,alarmM=-1,alarmS=-1;
+        alarm=0;
+        lcd.clrScr();
+        lcd.setFont(Term9x14);
+        snprintf(buf, 25, "ALARM!!!!");
+        lcd.printStr(ALIGN_CENTER,  1, buf);
+        snprintf(buf, 25, " %d:%02d:%02d ", curTime.hour, curTime.minute, curTime.second);
+        lcd.printStr(ALIGN_CENTER, 3, buf);
+        playBuzzer();
+        lcd.clrScr();
+    }
+}
